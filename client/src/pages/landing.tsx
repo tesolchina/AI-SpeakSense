@@ -1,5 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { useAuth } from "@/hooks/use-auth";
+import { useLocation } from "wouter";
+import { useEffect } from "react";
 import {
   Sparkles,
   MessageSquare,
@@ -20,6 +23,23 @@ const GoogleIcon = () => (
 );
 
 export default function Landing() {
+  const { isAuthenticated, isLoading } = useAuth();
+  const [, setLocation] = useLocation();
+
+  useEffect(() => {
+    if (isAuthenticated && !isLoading) {
+      setLocation("/dashboard");
+    }
+  }, [isAuthenticated, isLoading, setLocation]);
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-sm">

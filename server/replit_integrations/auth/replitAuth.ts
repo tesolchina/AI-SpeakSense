@@ -130,10 +130,26 @@ export async function setupAuth(app: Express) {
   });
 }
 
-export const isAuthenticated: RequestHandler = async (req, res, next) => {
+export const isAuthenticated: RequestHandler = async (req: any, res, next) => {
+  // Check for Google Auth session first
+  if (req.session?.googleUser) {
+    // Attach user info for route handlers
+    req.user = {
+      claims: {
+        sub: req.session.googleUser.id,
+        email: req.session.googleUser.email,
+        first_name: req.session.googleUser.givenName,
+        last_name: req.session.googleUser.familyName,
+        profile_image_url: req.session.googleUser.picture,
+      }
+    };
+    return next();
+  }
+
+  // Check for Replit Auth
   const user = req.user as any;
 
-  if (!req.isAuthenticated() || !user.expires_at) {
+  if (!req.isAuthenticated() || !user?.expires_at) {
     return res.status(401).json({ message: "Unauthorized" });
   }
 
