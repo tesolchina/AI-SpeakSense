@@ -1,0 +1,32 @@
+{
+  "name": "google-auth-module",
+  "version": "1.0.0",
+  "description": "Standalone, reusable Google Sign-In module for Express + React applications",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"No tests configured\""
+  },
+  "keywords": [
+    "google",
+    "oauth",
+    "authentication",
+    "express",
+    "react"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "express": "^4.0.0",
+    "express-session": "^1.17.0",
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.17.10",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}
