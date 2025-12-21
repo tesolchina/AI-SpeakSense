@@ -53,7 +53,7 @@ export function createGoogleAuthRouter(config: GoogleAuthConfig): Router {
       scope: scopes.join(' '),
       state: state,
       access_type: 'offline',
-      prompt: 'consent'
+      prompt: 'select_account'
     });
 
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
