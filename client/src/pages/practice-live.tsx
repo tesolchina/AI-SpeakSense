@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import * as SpeechSDK from "microsoft-cognitiveservices-speech-sdk";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -96,10 +97,13 @@ export default function PracticeLive() {
   const [useTextMode, setUseTextMode] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
   const [ttsSupported, setTtsSupported] = useState(false);
+  const [useAzureTTS, setUseAzureTTS] = useState(false);
+  const [azureToken, setAzureToken] = useState<{ authToken: string; region: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const synthRef = useRef<SpeechSynthesis | null>(null);
+  const azureSynthesizerRef = useRef<SpeechSDK.SpeechSynthesizer | null>(null);
   const pendingSpeechRef = useRef<string>("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -169,21 +173,62 @@ export default function PracticeLive() {
       if (synthRef.current) {
         synthRef.current.cancel();
       }
+      if (azureSynthesizerRef.current) {
+        azureSynthesizerRef.current.close();
+      }
     };
   }, [toast]);
 
+  // Fetch Azure Speech token and set up auto-refresh
+  useEffect(() => {
+    let tokenRefreshTimer: NodeJS.Timeout | null = null;
+
+    async function initializeAzureSpeech() {
+      try {
+        const response = await fetch("/api/speech/token", { credentials: "include" });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.authToken && data.region) {
+            setAzureToken(data);
+            setUseAzureTTS(true);
+            
+            // Close existing synthesizer if any
+            if (azureSynthesizerRef.current) {
+              azureSynthesizerRef.current.close();
+            }
+            
+            // Initialize Azure Speech synthesizer
+            const speechConfig = SpeechSDK.SpeechConfig.fromAuthorizationToken(
+              data.authToken,
+              data.region
+            );
+            speechConfig.speechSynthesisVoiceName = "en-US-JennyNeural";
+            const audioConfig = SpeechSDK.AudioConfig.fromDefaultSpeakerOutput();
+            azureSynthesizerRef.current = new SpeechSDK.SpeechSynthesizer(speechConfig, audioConfig);
+
+            // Refresh token every 8 minutes (before 10-minute expiry)
+            tokenRefreshTimer = setTimeout(initializeAzureSpeech, 8 * 60 * 1000);
+          }
+        }
+      } catch (error) {
+        console.log("Azure Speech not available, using browser TTS");
+        setUseAzureTTS(false);
+      }
+    }
+    
+    initializeAzureSpeech();
+    
+    return () => {
+      if (tokenRefreshTimer) {
+        clearTimeout(tokenRefreshTimer);
+      }
+    };
+  }, []);
+
   const speakText = useCallback((text: string) => {
-    if (!synthRef.current || !voiceEnabled) return;
-    
-    synthRef.current.cancel();
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-    
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => {
+    if (!voiceEnabled) return;
+
+    const onSpeechEnd = () => {
       setIsSpeaking(false);
       if (autoListen && recognitionRef.current && !useTextMode) {
         setTimeout(() => {
@@ -197,10 +242,52 @@ export default function PracticeLive() {
         }, 500);
       }
     };
-    utterance.onerror = () => setIsSpeaking(false);
+
+    // Helper to use browser TTS fallback
+    const useBrowserTTS = () => {
+      if (!synthRef.current) {
+        setIsSpeaking(false);
+        return;
+      }
+      
+      synthRef.current.cancel();
+      
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+      
+      utterance.onstart = () => setIsSpeaking(true);
+      utterance.onend = onSpeechEnd;
+      utterance.onerror = () => setIsSpeaking(false);
+      
+      synthRef.current.speak(utterance);
+    };
+
+    // Try Azure TTS first
+    if (useAzureTTS && azureSynthesizerRef.current) {
+      setIsSpeaking(true);
+      azureSynthesizerRef.current.speakTextAsync(
+        text,
+        (result) => {
+          if (result.reason === SpeechSDK.ResultReason.SynthesizingAudioCompleted) {
+            onSpeechEnd();
+          } else {
+            console.error("Azure TTS failed, falling back to browser TTS:", result.errorDetails);
+            useBrowserTTS();
+          }
+        },
+        (error) => {
+          console.error("Azure TTS error, falling back to browser TTS:", error);
+          useBrowserTTS();
+        }
+      );
+      return;
+    }
     
-    synthRef.current.speak(utterance);
-  }, [voiceEnabled, autoListen, useTextMode]);
+    // Use browser TTS when Azure is not available
+    useBrowserTTS();
+  }, [voiceEnabled, autoListen, useTextMode, useAzureTTS]);
 
   const startRecording = useCallback(() => {
     if (!recognitionRef.current || isRecording || isSpeaking || isStreaming) return;
@@ -370,8 +457,11 @@ export default function PracticeLive() {
   }, [isRecording, isSpeaking]);
 
   const handleVoiceToggle = useCallback((enabled: boolean) => {
-    if (!enabled && synthRef.current) {
-      synthRef.current.cancel();
+    if (!enabled) {
+      if (synthRef.current) {
+        synthRef.current.cancel();
+      }
+      // Azure TTS doesn't have a cancel method on synthesizer, just stop speaking state
       setIsSpeaking(false);
     }
     setVoiceEnabled(enabled);

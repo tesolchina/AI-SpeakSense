@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import OpenAI from "openai";
+import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { storage } from "./storage";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { createGoogleAuthRouter } from "../google-auth-module/src/server/router";
@@ -130,6 +131,51 @@ export async function registerRoutes(
   }
 
   await initializeDefaults();
+
+  // Azure Speech token endpoint - generates short-lived auth token for secure client-side use
+  app.get("/api/speech/token", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const speechKey = process.env.AZURE_SPEECH_KEY;
+      const speechRegion = process.env.AZURE_SPEECH_REGION;
+
+      if (!speechKey || !speechRegion) {
+        return res.status(503).json({ 
+          error: "Azure Speech not configured",
+          fallback: true 
+        });
+      }
+
+      // Fetch a short-lived authorization token from Azure (valid for 10 minutes)
+      const tokenResponse = await fetch(
+        `https://${speechRegion}.api.cognitive.microsoft.com/sts/v1.0/issueToken`,
+        {
+          method: "POST",
+          headers: {
+            "Ocp-Apim-Subscription-Key": speechKey,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+        }
+      );
+
+      if (!tokenResponse.ok) {
+        console.error("Azure token fetch failed:", tokenResponse.status);
+        return res.status(503).json({ 
+          error: "Failed to get Azure token",
+          fallback: true 
+        });
+      }
+
+      const authToken = await tokenResponse.text();
+
+      res.json({
+        authToken,
+        region: speechRegion,
+      });
+    } catch (error) {
+      console.error("Error getting speech token:", error);
+      res.status(500).json({ error: "Failed to get speech token", fallback: true });
+    }
+  });
 
   app.get("/api/templates", async (req: Request, res: Response) => {
     try {
