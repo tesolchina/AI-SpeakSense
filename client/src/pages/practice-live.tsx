@@ -194,7 +194,12 @@ export default function PracticeLive() {
             
             // Close existing synthesizer if any
             if (azureSynthesizerRef.current) {
-              azureSynthesizerRef.current.close();
+              try {
+                azureSynthesizerRef.current.close();
+              } catch (e) {
+                // Ignore close errors
+              }
+              azureSynthesizerRef.current = null;
             }
             
             // Initialize Azure Speech synthesizer
@@ -204,17 +209,18 @@ export default function PracticeLive() {
             );
             speechConfig.speechSynthesisVoiceName = "en-US-JennyNeural";
             
-            // Use default speaker output
-            const audioConfig = SpeechSDK.AudioConfig.fromDefaultSpeakerOutput();
-            const synthesizer = new SpeechSDK.SpeechSynthesizer(speechConfig, audioConfig);
-            
-            // Test the synthesizer is valid
-            if (synthesizer) {
-              azureSynthesizerRef.current = synthesizer;
-              setUseAzureTTS(true);
-              console.log("Azure Speech SDK initialized successfully");
-            } else {
-              console.error("Failed to create Azure synthesizer");
+            // Use default speaker output - wrap in try/catch
+            try {
+              const audioConfig = SpeechSDK.AudioConfig.fromDefaultSpeakerOutput();
+              const synthesizer = new SpeechSDK.SpeechSynthesizer(speechConfig, audioConfig);
+              
+              if (synthesizer) {
+                azureSynthesizerRef.current = synthesizer;
+                setUseAzureTTS(true);
+                console.log("Azure Speech SDK initialized successfully");
+              }
+            } catch (sdkError) {
+              console.error("Azure SDK initialization error:", sdkError);
               setUseAzureTTS(false);
             }
 
@@ -226,7 +232,7 @@ export default function PracticeLive() {
           setUseAzureTTS(false);
         }
       } catch (error) {
-        console.error("Azure Speech init error:", error);
+        console.error("Azure Speech init error:", error instanceof Error ? error.message : error);
         setUseAzureTTS(false);
       }
     }
@@ -279,12 +285,13 @@ export default function PracticeLive() {
       synthRef.current.speak(utterance);
     };
 
-    // Try Azure TTS first
-    console.log("speakText called, useAzureTTS:", useAzureTTS, "synthesizer exists:", !!azureSynthesizerRef.current);
-    if (useAzureTTS && azureSynthesizerRef.current) {
+    // Try Azure TTS first - check ref directly to avoid stale closure issues
+    const azureSynth = azureSynthesizerRef.current;
+    console.log("speakText called, synthesizer exists:", !!azureSynth);
+    if (azureSynth) {
       console.log("Using Azure TTS to speak:", text.substring(0, 50) + "...");
       setIsSpeaking(true);
-      azureSynthesizerRef.current.speakTextAsync(
+      azureSynth.speakTextAsync(
         text,
         (result) => {
           console.log("Azure TTS result:", result.reason, SpeechSDK.ResultReason[result.reason]);
@@ -308,7 +315,7 @@ export default function PracticeLive() {
     
     // Use browser TTS when Azure is not available
     useBrowserTTS();
-  }, [voiceEnabled, autoListen, useTextMode, useAzureTTS]);
+  }, [voiceEnabled, autoListen, useTextMode]);
 
   const startRecording = useCallback(() => {
     if (!recognitionRef.current || isRecording || isSpeaking || isStreaming) return;
