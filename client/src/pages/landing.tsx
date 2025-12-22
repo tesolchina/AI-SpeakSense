@@ -28,7 +28,7 @@ export default function Landing() {
 
   useEffect(() => {
     if (isAuthenticated && !isLoading) {
-      setLocation("/dashboard");
+      setLocation("/");
     }
   }, [isAuthenticated, isLoading, setLocation]);
 

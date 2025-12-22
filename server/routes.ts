@@ -117,7 +117,7 @@ export async function registerRoutes(
       clientId: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       redirectUri: `${appUrl}/api/google-auth/google/callback`,
-      successRedirect: "/dashboard",
+      successRedirect: "/",
       failureRedirect: "/",
       scopes: ["openid", "email", "profile"],
       onUserAuthenticated: async (user) => {
