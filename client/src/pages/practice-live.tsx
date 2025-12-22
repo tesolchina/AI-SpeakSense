@@ -2,26 +2,29 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
-  Send,
   Square,
   Clock,
   MessageSquare,
   Bot,
   User,
-  Sparkles,
   Loader2,
   Mic,
   MicOff,
+  Volume2,
+  VolumeX,
+  Send,
+  Keyboard,
 } from "lucide-react";
 import type { PracticeSession, SessionMessage } from "@shared/schema";
 
@@ -80,20 +83,43 @@ export default function PracticeLive() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isTimerRunning, setIsTimerRunning] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [currentTranscript, setCurrentTranscript] = useState("");
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [autoListen, setAutoListen] = useState(true);
+  const [textInput, setTextInput] = useState("");
+  const [useTextMode, setUseTextMode] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
+  const [ttsSupported, setTtsSupported] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const synthRef = useRef<SpeechSynthesis | null>(null);
+  const pendingSpeechRef = useRef<string>("");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const { data: session, isLoading: sessionLoading } = useQuery<
+    PracticeSession & { messages: SessionMessage[] }
+  >({
+    queryKey: ["/api/sessions", id],
+    refetchInterval: false,
+  });
+
+  const messages = session?.messages || [];
 
   useEffect(() => {
+    if (window.speechSynthesis) {
+      synthRef.current = window.speechSynthesis;
+      setTtsSupported(true);
+    }
+    
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
     if (SpeechRecognition) {
       setSpeechSupported(true);
       const recognition = new SpeechRecognition();
@@ -102,23 +128,31 @@ export default function PracticeLive() {
       recognition.lang = "en-US";
 
       recognition.onresult = (event) => {
-        let transcript = "";
+        let finalTranscript = "";
+        let interimTranscript = "";
+        
         for (let i = 0; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
+          const result = event.results[i];
+          if (result.isFinal) {
+            finalTranscript += result[0].transcript;
+          } else {
+            interimTranscript += result[0].transcript;
+          }
         }
-        setInput(transcript);
+        
+        setCurrentTranscript(finalTranscript || interimTranscript);
       };
 
       recognition.onerror = (event) => {
         console.error("Speech recognition error:", event.error);
-        setIsRecording(false);
-        if (event.error !== "aborted") {
+        if (event.error !== "aborted" && event.error !== "no-speech") {
           toast({
             title: "Microphone Error",
             description: "Could not access microphone. Please check permissions.",
             variant: "destructive",
           });
         }
+        setIsRecording(false);
       };
 
       recognition.onend = () => {
@@ -132,30 +166,216 @@ export default function PracticeLive() {
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
+      if (synthRef.current) {
+        synthRef.current.cancel();
+      }
     };
   }, [toast]);
 
-  const toggleRecording = useCallback(() => {
-    if (!recognitionRef.current) return;
+  const speakText = useCallback((text: string) => {
+    if (!synthRef.current || !voiceEnabled) return;
+    
+    synthRef.current.cancel();
+    
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      if (autoListen && recognitionRef.current && !useTextMode) {
+        setTimeout(() => {
+          try {
+            recognitionRef.current?.start();
+            setIsRecording(true);
+            setCurrentTranscript("");
+          } catch (e) {
+            console.error("Failed to start recognition:", e);
+          }
+        }, 500);
+      }
+    };
+    utterance.onerror = () => setIsSpeaking(false);
+    
+    synthRef.current.speak(utterance);
+  }, [voiceEnabled, autoListen, useTextMode]);
 
-    if (isRecording) {
-      recognitionRef.current.stop();
-      setIsRecording(false);
-    } else {
-      setInput("");
+  const startRecording = useCallback(() => {
+    if (!recognitionRef.current || isRecording || isSpeaking || isStreaming) return;
+    
+    if (synthRef.current) {
+      synthRef.current.cancel();
+    }
+    
+    try {
+      setCurrentTranscript("");
       recognitionRef.current.start();
       setIsRecording(true);
+    } catch (e) {
+      console.error("Failed to start recognition:", e);
     }
-  }, [isRecording]);
+  }, [isRecording, isSpeaking, isStreaming]);
 
-  const { data: session, isLoading: sessionLoading } = useQuery<
-    PracticeSession & { messages: SessionMessage[] }
-  >({
-    queryKey: ["/api/sessions", id],
-    refetchInterval: false,
-  });
+  const stopRecordingAndSend = useCallback(async () => {
+    if (!recognitionRef.current || !isRecording) return;
+    
+    recognitionRef.current.stop();
+    setIsRecording(false);
+    
+    const transcript = currentTranscript.trim();
+    if (!transcript) {
+      toast({
+        title: "No speech detected",
+        description: "Please try speaking again.",
+      });
+      return;
+    }
+    
+    setCurrentTranscript("");
+    setIsStreaming(true);
+    setStreamingContent("");
 
-  const messages = session?.messages || [];
+    try {
+      const response = await fetch(`/api/sessions/${id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ content: transcript }),
+      });
+
+      if (!response.ok) throw new Error("Failed to send message");
+
+      await queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let content = "";
+
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.content) {
+                content += data.content;
+                setStreamingContent(content);
+              }
+              if (data.done) {
+                queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
+                pendingSpeechRef.current = content;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to send message. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsStreaming(false);
+      if (pendingSpeechRef.current) {
+        speakText(pendingSpeechRef.current);
+        pendingSpeechRef.current = "";
+      }
+      setStreamingContent("");
+    }
+  }, [id, isRecording, currentTranscript, toast, speakText]);
+
+  const sendTextMessage = useCallback(async () => {
+    if (!textInput.trim() || isStreaming) return;
+
+    const userMessage = textInput.trim();
+    setTextInput("");
+    setIsStreaming(true);
+    setStreamingContent("");
+
+    try {
+      const response = await fetch(`/api/sessions/${id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ content: userMessage }),
+      });
+
+      if (!response.ok) throw new Error("Failed to send message");
+
+      await queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let content = "";
+
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.content) {
+                content += data.content;
+                setStreamingContent(content);
+              }
+              if (data.done) {
+                queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
+                pendingSpeechRef.current = content;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to send message. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsStreaming(false);
+      if (pendingSpeechRef.current && voiceEnabled && ttsSupported) {
+        speakText(pendingSpeechRef.current);
+        pendingSpeechRef.current = "";
+      }
+      setStreamingContent("");
+      inputRef.current?.focus();
+    }
+  }, [id, textInput, isStreaming, toast, speakText, voiceEnabled, ttsSupported]);
+
+  const handleModeSwitch = useCallback((toTextMode: boolean) => {
+    if (recognitionRef.current && isRecording) {
+      recognitionRef.current.abort();
+      setIsRecording(false);
+      setCurrentTranscript("");
+    }
+    if (synthRef.current && isSpeaking) {
+      synthRef.current.cancel();
+      setIsSpeaking(false);
+    }
+    setUseTextMode(toTextMode);
+  }, [isRecording, isSpeaking]);
+
+  const handleVoiceToggle = useCallback((enabled: boolean) => {
+    if (!enabled && synthRef.current) {
+      synthRef.current.cancel();
+      setIsSpeaking(false);
+    }
+    setVoiceEnabled(enabled);
+  }, []);
 
   useEffect(() => {
     if (!isTimerRunning) return;
@@ -167,7 +387,7 @@ export default function PracticeLive() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, currentTranscript]);
 
   useEffect(() => {
     if (session && messages.length === 0 && !isStreaming) {
@@ -209,6 +429,7 @@ export default function PracticeLive() {
               }
               if (data.done) {
                 queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
+                pendingSpeechRef.current = content;
               }
             } catch (e) {}
           }
@@ -222,71 +443,18 @@ export default function PracticeLive() {
       });
     } finally {
       setIsStreaming(false);
-      setStreamingContent("");
-    }
-  };
-
-  const sendMessage = async () => {
-    if (!input.trim() || isStreaming) return;
-
-    const userMessage = input.trim();
-    setInput("");
-    setIsStreaming(true);
-    setStreamingContent("");
-
-    try {
-      const response = await fetch(`/api/sessions/${id}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ content: userMessage }),
-      });
-
-      if (!response.ok) throw new Error("Failed to send message");
-
-      await queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let content = "";
-
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.content) {
-                content += data.content;
-                setStreamingContent(content);
-              }
-              if (data.done) {
-                queryClient.invalidateQueries({ queryKey: ["/api/sessions", id] });
-              }
-            } catch (e) {}
-          }
-        }
+      if (pendingSpeechRef.current) {
+        speakText(pendingSpeechRef.current);
+        pendingSpeechRef.current = "";
       }
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to send message. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsStreaming(false);
       setStreamingContent("");
-      inputRef.current?.focus();
     }
   };
 
   const endSession = useMutation({
     mutationFn: async () => {
+      if (synthRef.current) synthRef.current.cancel();
+      if (recognitionRef.current) recognitionRef.current.abort();
       const response = await apiRequest("POST", `/api/sessions/${id}/end`);
       return response.json();
     },
@@ -311,13 +479,6 @@ export default function PracticeLive() {
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
-
   if (sessionLoading) {
     return (
       <div className="flex h-full flex-col p-6">
@@ -339,12 +500,24 @@ export default function PracticeLive() {
               {session?.role || "Interview"} Practice
             </span>
             <span className="text-xs text-muted-foreground">
-              {session?.company || "General"}
+              {session?.company || "General"} - Voice Mode
             </span>
           </div>
         </div>
 
         <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch
+              id="voice-toggle"
+              checked={voiceEnabled}
+              onCheckedChange={handleVoiceToggle}
+              data-testid="switch-voice"
+            />
+            <Label htmlFor="voice-toggle" className="text-xs">
+              {voiceEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+            </Label>
+          </div>
+
           <Badge variant="secondary" className="gap-1.5 px-3 py-1.5">
             <Clock className="h-3.5 w-3.5" />
             {formatTime(elapsedTime)}
@@ -389,62 +562,134 @@ export default function PracticeLive() {
             </div>
           )}
 
+          {currentTranscript && (
+            <MessageBubble
+              role="user"
+              content={currentTranscript}
+              userName={user?.firstName || "You"}
+              isStreaming
+            />
+          )}
+
           <div ref={messagesEndRef} />
         </div>
       </ScrollArea>
 
-      <div className="border-t p-4">
-        <div className="mx-auto flex max-w-3xl gap-3">
-          {speechSupported && (
-            <Button
-              variant={isRecording ? "destructive" : "outline"}
-              size="icon"
-              onClick={toggleRecording}
-              disabled={isStreaming}
-              data-testid="button-microphone"
-              title={isRecording ? "Stop recording" : "Start voice input"}
-            >
-              {isRecording ? (
-                <MicOff className="h-4 w-4" />
-              ) : (
-                <Mic className="h-4 w-4" />
-              )}
-            </Button>
+      <div className="border-t p-6">
+        <div className="mx-auto flex max-w-3xl flex-col items-center gap-4">
+          {isSpeaking && (
+            <div className="flex items-center gap-2 text-primary">
+              <Volume2 className="h-5 w-5 animate-pulse" />
+              <span className="text-sm font-medium">AI is speaking...</span>
+            </div>
           )}
-          <Textarea
-            ref={inputRef}
-            placeholder={isRecording ? "Listening... speak now" : "Type your response or use the microphone..."}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isStreaming || isRecording}
-            className="min-h-[60px] resize-none"
-            data-testid="input-message"
-          />
-          <Button
-            onClick={() => {
-              if (isRecording) {
-                recognitionRef.current?.stop();
-                setIsRecording(false);
-              }
-              sendMessage();
-            }}
-            disabled={!input.trim() || isStreaming}
-            className="shrink-0 px-4"
-            data-testid="button-send"
-          >
-            {isStreaming ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
+
+          {useTextMode || !speechSupported ? (
+            <div className="flex w-full gap-3">
+              <Textarea
+                ref={inputRef}
+                placeholder="Type your response..."
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendTextMessage();
+                  }
+                }}
+                disabled={isStreaming || isSpeaking}
+                className="min-h-[60px] resize-none"
+                data-testid="input-message"
+              />
+              <Button
+                onClick={sendTextMessage}
+                disabled={!textInput.trim() || isStreaming || isSpeaking}
+                className="shrink-0 px-4"
+                data-testid="button-send"
+              >
+                {isStreaming ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          ) : (
+            <>
+              {!isSpeaking && !isStreaming && (
+                <Button
+                  size="lg"
+                  variant={isRecording ? "destructive" : "default"}
+                  onClick={isRecording ? stopRecordingAndSend : startRecording}
+                  className="h-20 w-20 rounded-full"
+                  data-testid="button-microphone"
+                >
+                  {isRecording ? (
+                    <MicOff className="h-8 w-8" />
+                  ) : (
+                    <Mic className="h-8 w-8" />
+                  )}
+                </Button>
+              )}
+
+              {isStreaming && (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <span className="text-sm">Processing your response...</span>
+                </div>
+              )}
+            </>
+          )}
+
+          <p className="text-center text-sm text-muted-foreground">
+            {useTextMode || !speechSupported
+              ? "Press Enter to send, Shift+Enter for new line"
+              : isRecording 
+                ? "Listening... Click to stop and send" 
+                : isSpeaking 
+                  ? "Wait for AI to finish speaking" 
+                  : isStreaming
+                    ? "Please wait..."
+                    : "Click the microphone to start speaking"}
+          </p>
+
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            {speechSupported && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleModeSwitch(!useTextMode)}
+                data-testid="button-toggle-mode"
+              >
+                {useTextMode ? (
+                  <>
+                    <Mic className="mr-2 h-4 w-4" />
+                    Switch to Voice
+                  </>
+                ) : (
+                  <>
+                    <Keyboard className="mr-2 h-4 w-4" />
+                    Switch to Text
+                  </>
+                )}
+              </Button>
             )}
-          </Button>
+
+            {!useTextMode && speechSupported && (
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="auto-listen"
+                  checked={autoListen}
+                  onCheckedChange={setAutoListen}
+                  data-testid="switch-auto-listen"
+                />
+                <Label htmlFor="auto-listen" className="text-xs text-muted-foreground">
+                  Auto-listen after AI speaks
+                </Label>
+              </div>
+            )}
+          </div>
         </div>
-        <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-muted-foreground">
-          {speechSupported 
-            ? "Press Enter to send, or click the microphone to speak" 
-            : "Press Enter to send, Shift+Enter for new line"}
-        </p>
       </div>
     </div>
   );
